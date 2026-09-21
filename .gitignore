@@ -5,3 +5,4 @@ build/*.zip
 
 # 工具本地配置
 .zcodeignore
+build/README.md
