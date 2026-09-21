@@ -1,0 +1,7 @@
+# 构建产物(通过 GitHub Release 分发)
+*.exe
+build/SuperMask-bundled.ps1
+build/*.zip
+
+# 工具本地配置
+.zcodeignore
