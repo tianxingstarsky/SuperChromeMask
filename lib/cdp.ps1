@@ -291,6 +291,14 @@ function Invoke-CdpApplyMask {
                     try { $null = Invoke-CdpEval $conn (New-LoginBlockScript) -TimeoutMs 3000 } catch {}
                 }
             }
+            # WebRTC 拦截同样每周期重新注入(幂等): 首次注入若遇页面加载竞态失败,
+            # 或站点重定向后 doc-start 脚本未触发, 周期性重注入可自愈
+            if ($Mask.webrtcBlock) {
+                $u2 = [string]$t.url
+                if ($u2 -like 'http*') {
+                    try { $null = Invoke-CdpEval $conn (New-WebRtcBlockScript) -TimeoutMs 3000 } catch {}
+                }
+            }
             $count++
         } else {
             $errors += ('[{0}] {1}' -f $t.url, $pageErr)

@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  超级面具 SuperMask v1.2.1
+#  超级面具 SuperMask v1.2.2
 #  给浏览器戴上"地理位置面具": 坐标 / 时区 / 语言 / WebRTC 一键伪装
 #
 #  核心承诺:
@@ -509,7 +509,7 @@ function Get-HelpText {
 
 # ---------- 窗体与控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '超级面具 SuperMask v1.2.1 — 浏览器地理伪装 · 用完即恢复'
+$form.Text = '超级面具 SuperMask v1.2.2 — 浏览器地理伪装 · 用完即恢复'
 $form.ClientSize = New-Object System.Drawing.Size(600, 768)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
