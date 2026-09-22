@@ -1,4 +1,4 @@
-# 超级面具 SuperMask v1.1.2
+# 超级面具 SuperMask v1.2.0
 
 给 Windows 电脑（尤其是浏览器）戴上"地理位置面具"：**GPS 坐标 / 时区 / 语言 / WebRTC** 一键伪装成任意地点。
 
@@ -15,7 +15,7 @@ VPN 只换了 IP。网站还能通过浏览器本身暴露的信息推断你的�
 | GPS 地理 API | `navigator.geolocation`（Wi-Fi/系统定位，返回真实坐标） | 调试协议运行时覆写坐标，并自动授权免弹窗 | 浏览器级·纯运行时 |
 | 时区 | `Intl`/`Date` 查询（IP 在东京而时区是东八区 → 暴露） | 运行时覆写为伪装地点时区 | 浏览器级·纯运行时 |
 | 语言/区域 | `navigator.language(s)` / Accept-Language / Intl | 运行时覆写 + 浏览器界面语言随地点 | 浏览器级·纯运行时 |
-| WebRTC | 通过 UDP/STUN 探测真实公网 IP（v1.1.1 修复的关键泄漏点：Chrome 会在 HTTP 代理无法转发 UDP 时绕过处理策略直连 STUN） | **三层防护**：① JS 层禁用 RTCPeerConnection，网页无法发起 STUN（确定性拦截）② 启动参数禁非代理 UDP ③ 面具浏览器显式代理；「验证伪装」内置泄漏探测可实测 | 浏览器级·纯运行时 |
+| WebRTC / QUIC 旁路 | WebRTC 的 STUN 探测、QUIC/HTTP3(UDP 443) 都可能绕过 HTTP 代理直连（v1.1.1 实测确认会泄漏真实 IP） | **强制VPN模式（v1.2.0）**：① 自动探测 SOCKS5（可承载 UDP）优先 ② 禁 QUIC/HTTP3 ③ JS 层禁用 RTCPeerConnection ④ 显式代理强制全部连接经 VPN，**代理断开即断网，绝不静默回退直连**；「验证伪装」内置泄漏探测可实测 | 浏览器级·纯运行时 |
 | IP 归属地 | **面具不改 IP**，由你的 VPN/代理决定 | 自动同步模式按出口 IP 生成全套伪装；手动模式启动时比对并提示 | 与 VPN 配合 |
 | Canvas 等指纹 | 设备关联识别（非定位，但可关联账号） | 实验性加固：Canvas 噪声 + JS 兜底（可选） | 部分缓解 |
 

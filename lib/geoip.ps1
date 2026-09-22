@@ -28,6 +28,56 @@ function Get-SystemProxy {
     return $null
 }
 
+# 探测 host:port 是否支持 SOCKS5 协议(发 SOCKS5 握手看响应版本字节)
+# SOCKS5 可承载 UDP 中继, 是"Chrome 全量强制走VPN"的最强代理形态
+function Test-Socks5Support {
+    param([string]$Addr, [int]$Port, [int]$TimeoutMs = 2000)
+    $c = $null
+    try {
+        $c = [Net.Sockets.TcpClient]::new()
+        $ar = $c.BeginConnect($Addr, $Port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        $c.EndConnect($ar)
+        $s = $c.GetStream()
+        $s.ReadTimeout = $TimeoutMs; $s.WriteTimeout = $TimeoutMs
+        $greeting = [byte[]](0x05, 0x01, 0x00)   # VER=5, 1个认证方法, 无认证
+        $s.Write($greeting, 0, 3)
+        $resp = New-Object byte[] 2
+        $n = $s.Read($resp, 0, 2)
+        return ($n -ge 2 -and $resp[0] -eq 0x05)
+    } catch { return $false }
+    finally { if ($c) { $c.Close() } }
+}
+
+# 规范化代理串: 探测 SOCKS5(同端口及回环相邻端口, 如 v2rayN 的 socks=http-1 布局),
+# 找到则优先 socks5://(可承载UDP), 否则保持/回落 http://
+# SOCKS5 采用条件严格: 必须通过握手验证; 结果在日志明示, 用户可用代理框手动覆盖
+function Get-NormalizedProxy {
+    param([string]$Proxy)
+    if (-not $Proxy) { return $null }
+    $p = $Proxy.Trim()
+    if ($p -match '^socks5?://') { return $p }   # 用户明确指定 socks, 直接用
+    try {
+        $hostPart = $p -replace '^https?://', ''
+        $uri = [Uri]('http://' + $hostPart)
+        if (Test-Socks5Support -Addr $uri.Host -Port $uri.Port) {
+            return 'socks5://' + $hostPart
+        }
+        $isLoopback = ($uri.Host -eq '127.0.0.1' -or $uri.Host -eq 'localhost' -or $uri.Host -eq '::1')
+        if ($isLoopback) {
+            foreach ($delta in @(-1, 1)) {
+                $port2 = $uri.Port + $delta
+                if ($port2 -lt 1 -or $port2 -gt 65535) { continue }
+                if (Test-Socks5Support -Addr $uri.Host -Port $port2) {
+                    return ('socks5://{0}:{1}' -f $uri.Host, $port2)
+                }
+            }
+        }
+    } catch {}
+    if ($p -match '^https?://') { return $p }
+    return 'http://' + $p
+}
+
 # 探测出口IP的地理位置
 # 返回 @{ ip; city; region; country; lat; lon; timezone; via } 或 $null(全部失败)
 function Get-ExitIpGeo {

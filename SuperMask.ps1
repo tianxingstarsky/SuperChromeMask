@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  超级面具 SuperMask v1.1.2
+#  超级面具 SuperMask v1.2.0
 #  给浏览器戴上"地理位置面具": 坐标 / 时区 / 语言 / WebRTC 一键伪装
 #
 #  核心承诺:
@@ -153,16 +153,19 @@ function Start-MaskSession {
     }
 
     # 4. 启动浏览器(全部为运行时参数, 不写系统文件)
-    # WebRTC 防泄漏增强: Chrome 的 WebRTC 会尝试 STUN over TCP 直连(不受系统代理约束),
-    # 仅靠处理策略挡不住; 必须给面具浏览器"显式代理", 让 STUN/TCP 也强制经 VPN
+    # 强制全量走VPN: Chrome 的 WebRTC 会尝试 STUN 直连(不受系统代理约束),
+    # QUIC/HTTP3(UDP443) 也是 HTTP 代理管不住的旁路 —— 因此:
+    #   a) 给面具浏览器"显式代理"(全部连接强制经VPN, 代理挂=断网, 无静默回退)
+    #   b) 优先 SOCKS5(可承载UDP)  c) 禁QUIC  d) JS禁WebRTC
     $effectiveProxy = $Proxy
     if ($WebRTCProtect -and -not $effectiveProxy) {
         $sysProxy = Get-SystemProxy
         if ($sysProxy) {
-            $effectiveProxy = $sysProxy
-            Write-Log "WebRTC 防泄漏增强: 面具浏览器显式代理 → $sysProxy (STUN/TCP 强制走 VPN, 真实IP不再直连暴露)"
+            $effectiveProxy = Get-NormalizedProxy $sysProxy
+            $note = $(if ($effectiveProxy -like 'socks5://*') { 'SOCKS5,可承载UDP' } else { 'HTTP' })
+            Write-Log "强制VPN模式: 面具浏览器全量代理 → $effectiveProxy [$note] (网页/DNS/后台全部经VPN, 禁QUIC旁路, 代理断开即断网不回退)"
         } else {
-            Write-Log '未检测到系统代理(TUN模式或直连), WebRTC 由处理策略限制(TUN下流量本身经VPN)'
+            Write-Log '未检测到系统代理(TUN模式或直连), WebRTC 由处理策略+JS禁用限制(TUN下流量本身经VPN)' 'WARN'
         }
     }
     $session.pid = Start-MaskedBrowser -BrowserPath $Browser.Path -Mask $fullMask -Port $port `
@@ -487,8 +490,9 @@ function Get-HelpText {
 · GPS 地理坐标   navigator.geolocation 返回伪装地点(免授权弹窗)
 · 时区           Intl/Date 返回伪装时区(网站查时区=IP不符的主要手段)
 · 语言/区域      navigator.language(s) / Intl / Accept-Language
-· WebRTC         处理策略禁非代理UDP + 显式代理强制STUN/TCP走VPN
-                 (勾选时; 验证页可实测是否有公网IP泄漏)
+· 强制VPN模式    面具浏览器全量流量走代理: 自动探测SOCKS5(可承载
+                 UDP)优先, 禁QUIC/HTTP3旁路, JS禁WebRTC, DNS随代理;
+                 代理断开即断网不静默回退 → 不留任何直连泄漏
 · (实验)指纹加固 JS 兜底时区语言 + Canvas 噪声
 
 【自动同步原理】
@@ -512,7 +516,7 @@ function Get-HelpText {
 
 # ---------- 窗体与控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '超级面具 SuperMask v1.1.2 — 浏览器地理伪装 · 用完即恢复'
+$form.Text = '超级面具 SuperMask v1.2.0 — 浏览器地理伪装 · 用完即恢复'
 $form.ClientSize = New-Object System.Drawing.Size(600, 768)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
@@ -585,7 +589,7 @@ function New-CheckBox { param([string]$Text, [int]$X, [int]$Y, [int]$W, [bool]$C
     $c.Size = New-Object System.Drawing.Size($W, 22); $c.Checked = $Checked
     return $c
 }
-$ckWebRTC     = New-CheckBox 'WebRTC 防泄漏: 禁用网页WebRTC + 强制代理(推荐; 网页语音通话将不可用)' 15 24 550 $true
+$ckWebRTC     = New-CheckBox '强制VPN模式: Chrome全量流量走代理(SOCKS5优先) + 禁WebRTC/QUIC(推荐; 网页通话不可用)' 15 24 550 $true
 $ckHardening  = New-CheckBox '指纹加固(实验): JS 兜底时区/语言 + Canvas 噪声' 15 48 550 $false
 $ckKeep       = New-CheckBox '保留面具配置文件(登录可复用; 默认退出即焚)' 15 72 550 $false
 $ckSyncTz     = New-CheckBox '同步伪装系统时区(默认关; 停止自动还原 + 重启开机守卫)' 15 96 550 $false

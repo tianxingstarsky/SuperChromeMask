@@ -55,8 +55,10 @@ function Start-MaskedBrowser {
         # 阻止 WebRTC 暴露真实 IP:
         #  - disable_non_proxied_udp: UDP 候选只允许经代理
         #  - STUN over TCP 的直连泄漏由"显式 --proxy-server"解决(见 Start-MaskSession 中的增强逻辑)
+        #  - JS 层禁用 RTCPeerConnection(见 cdp.ps1, 确定性拦截)
         $argList += @(
-            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
+            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+            '--disable-quic'    # 堵住 QUIC/HTTP3(UDP 443) 直连旁路, HTTP 代理管不住的泄漏点
         )
     }
     if ($Proxy) {
