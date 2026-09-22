@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  超级面具 SuperMask v1.1
+#  超级面具 SuperMask v1.1.1
 #  给浏览器戴上"地理位置面具": 坐标 / 时区 / 语言 / WebRTC 一键伪装
 #
 #  核心承诺:
@@ -107,6 +107,7 @@ function Start-MaskSession {
     $fullMask.userAgent    = $UserAgentStr
     $fullMask.acceptLanguage = if ($UserAgentStr) { $Mask.locale } else { '' }
     $fullMask.hardening    = $HardeningOn
+    $fullMask.webrtcBlock  = $WebRTCProtect
     $session = [ordered]@{
         version    = 1; active = $true
         startedUtc = (Get-Date).ToUniversalTime().ToString('s')
@@ -152,8 +153,20 @@ function Start-MaskSession {
     }
 
     # 4. 启动浏览器(全部为运行时参数, 不写系统文件)
+    # WebRTC 防泄漏增强: Chrome 的 WebRTC 会尝试 STUN over TCP 直连(不受系统代理约束),
+    # 仅靠处理策略挡不住; 必须给面具浏览器"显式代理", 让 STUN/TCP 也强制经 VPN
+    $effectiveProxy = $Proxy
+    if ($WebRTCProtect -and -not $effectiveProxy) {
+        $sysProxy = Get-SystemProxy
+        if ($sysProxy) {
+            $effectiveProxy = $sysProxy
+            Write-Log "WebRTC 防泄漏增强: 面具浏览器显式代理 → $sysProxy (STUN/TCP 强制走 VPN, 真实IP不再直连暴露)"
+        } else {
+            Write-Log '未检测到系统代理(TUN模式或直连), WebRTC 由处理策略限制(TUN下流量本身经VPN)'
+        }
+    }
     $session.pid = Start-MaskedBrowser -BrowserPath $Browser.Path -Mask $fullMask -Port $port `
-        -ProfileDir $profileDir -ProtectWebRTC $WebRTCProtect -Proxy $Proxy
+        -ProfileDir $profileDir -ProtectWebRTC $WebRTCProtect -Proxy $effectiveProxy
     Save-SessionState $session
     Write-Log ("浏览器已启动: {0}  PID={1}  调试端口={2}  临时配置: {3}" -f $Browser.Name, $session.pid, $port, $profileDir)
 
@@ -243,6 +256,30 @@ function Invoke-StaleRecovery {
     return (Stop-MaskSession $s $null)
 }
 
+# WebRTC 泄漏探测: 在页面里用多路 STUN 收集 srflx/relay 候选(即公网映射地址),
+# 与 VPN 出口 IP 比对 —— 这正是 browserleaks 检测 WebRTC 泄漏的原理
+function Invoke-WebRtcLeakCheck {
+    param($Conn, [string]$ExitIp)
+    $json = Invoke-CdpEval $Conn "(function(){return new Promise(function(res){ try { var ips=[]; var seen={}; var pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.qq.com:3478'}]}); pc.createDataChannel('m'); pc.onicecandidate=function(e){ if(e && e.candidate){ var c=e.candidate.candidate||''; if(c.indexOf('typ srflx')>-1||c.indexOf('typ relay')>-1){ var m=c.match(/([0-9]{1,3}(?:\.[0-9]{1,3}){3})/); if(m && !seen[m[1]]){ seen[m[1]]=1; ips.push(m[1]); } } } }; var pp=pc.createOffer().then(function(o){ return pc.setLocalDescription(o); }); setTimeout(function(){ try{pc.close()}catch(e){}; res(JSON.stringify(ips)); }, 6000); } catch(e){ res('[]'); } })})()" -AwaitPromise -TimeoutMs 9500
+    $ips = @()
+    try { $ips = @((ConvertFrom-Json $json)) } catch {}
+    $lines = @()
+    if ($ips.Count -eq 0) {
+        $lines += 'WebRTC 泄漏检查: 无公网候选(WebRTC已禁用或禁非代理UDP) [OK]'
+    } else {
+        foreach ($ip in $ips) {
+            if ($ExitIp -and $ip -eq $ExitIp) {
+                $lines += ("WebRTC 泄漏检查: 公网映射 {0} = VPN出口 [OK]" -f $ip)
+            } elseif (-not $ExitIp) {
+                $lines += ("WebRTC 泄漏检查: 公网映射 {0}  (出口未知, 请自行比对)" -f $ip)
+            } else {
+                $lines += ("WebRTC 泄漏检查: 公网映射 {0} ≠ VPN出口 {1} [X] — 疑似泄漏, 检查VPN/代理" -f $ip, $ExitIp)
+            }
+        }
+    }
+    return $lines
+}
+
 # ---------------- 伪装效果核验(读回浏览器实际看到的值) ----------------
 function Invoke-FullVerify {
     param($Cdp, $Mask)
@@ -252,7 +289,11 @@ function Invoke-FullVerify {
     # 建立页面ID→URL 映射(空源页面如 about:/chrome: 无法使用地理API, 跳过该项)
     $urlById = @{}
     foreach ($t in (Get-CdpPages $Cdp)) { $urlById[[string]$t.id] = [string]$t.url }
+    # 出口IP(用于 WebRTC 泄漏比对); 探测失败则仅报告映射地址
+    $exitIp = ''
+    try { $g = Get-ExitIpGeo; if ($g) { $exitIp = [string]$g.ip } } catch {}
     $checked = 0
+    $webrtcDone = $false
     foreach ($tid in $pages) {
         $conn = $Cdp.Pages[$tid]
         if (-not $conn -or $conn.Socket.State -ne [System.Net.WebSockets.WebSocketState]::Open) { continue }
@@ -280,6 +321,12 @@ function Invoke-FullVerify {
                 $info.lang, $(if ($langOk) { ' [OK]' } else { ' [X]' }), `
                 $(if ($nullOrigin) { '跳过' + $geoNote } else { ('({0}, {1}){2}{3}' -f $geoLat, $geoLon, $(if ($geoOk) { ' [OK]' } else { ' [X]' }), $geoNote) }))
             $checked++
+            # WebRTC 泄漏探测(在第一个真实页面上执行一次, 模拟 browserleaks 的检测方式)
+            if (-not $webrtcDone -and -not $nullOrigin) {
+                $webrtcDone = $true
+                try { $lines += (Invoke-WebRtcLeakCheck $conn $exitIp) }
+                catch { $lines += ("WebRTC 泄漏检查: 探测失败({0})" -f $_.Exception.Message) }
+            }
         } catch { $lines += ("页面 {0} 核验异常: {1}" -f $tid, $_.Exception.Message) }
     }
     $lines += ('期望值: 时区 {0} / 语言 {1} / 坐标 {2}, {3}   — 已核验 {4} 页' -f $Mask.timezone, $Mask.locale, $Mask.lat, $Mask.lon, $checked)
@@ -440,7 +487,8 @@ function Get-HelpText {
 · GPS 地理坐标   navigator.geolocation 返回伪装地点(免授权弹窗)
 · 时区           Intl/Date 返回伪装时区(网站查时区=IP不符的主要手段)
 · 语言/区域      navigator.language(s) / Intl / Accept-Language
-· WebRTC         启动参数阻止 UDP 泄漏真实 IP(勾选时)
+· WebRTC         处理策略禁非代理UDP + 显式代理强制STUN/TCP走VPN
+                 (勾选时; 验证页可实测是否有公网IP泄漏)
 · (实验)指纹加固 JS 兜底时区语言 + Canvas 噪声
 
 【自动同步原理】
@@ -464,7 +512,7 @@ function Get-HelpText {
 
 # ---------- 窗体与控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '超级面具 SuperMask v1.1 — 浏览器地理伪装 · 用完即恢复'
+$form.Text = '超级面具 SuperMask v1.1.1 — 浏览器地理伪装 · 用完即恢复'
 $form.ClientSize = New-Object System.Drawing.Size(600, 768)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
@@ -537,7 +585,7 @@ function New-CheckBox { param([string]$Text, [int]$X, [int]$Y, [int]$W, [bool]$C
     $c.Size = New-Object System.Drawing.Size($W, 22); $c.Checked = $Checked
     return $c
 }
-$ckWebRTC     = New-CheckBox 'WebRTC 防泄漏: 阻止暴露真实 IP(推荐)' 15 24 550 $true
+$ckWebRTC     = New-CheckBox 'WebRTC 防泄漏: 禁用网页WebRTC + 强制代理(推荐; 网页语音通话将不可用)' 15 24 550 $true
 $ckHardening  = New-CheckBox '指纹加固(实验): JS 兜底时区/语言 + Canvas 噪声' 15 48 550 $false
 $ckKeep       = New-CheckBox '保留面具配置文件(登录可复用; 默认退出即焚)' 15 72 550 $false
 $ckSyncTz     = New-CheckBox '同步伪装系统时区(默认关; 停止自动还原 + 重启开机守卫)' 15 96 550 $false

@@ -52,10 +52,11 @@ function Start-MaskedBrowser {
         "--lang=$($Mask.lang)"                # 界面语言随伪装地点
     )
     if ($ProtectWebRTC) {
-        # 阻止 WebRTC 通过 UDP 暴露真实 IP (VPN/代理场景下的经典泄漏)
+        # 阻止 WebRTC 暴露真实 IP:
+        #  - disable_non_proxied_udp: UDP 候选只允许经代理
+        #  - STUN over TCP 的直连泄漏由"显式 --proxy-server"解决(见 Start-MaskSession 中的增强逻辑)
         $argList += @(
-            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-            '--enforce-webrtc-ip-permission-check'
+            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
         )
     }
     if ($Proxy) {

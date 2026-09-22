@@ -149,6 +149,24 @@ function New-HardeningScript {
 "@
 }
 
+# ---------------- WebRTC 禁用脚本(防IP泄漏的关键防线) ----------------
+# 实测: Chrome 在"HTTP代理无法转发UDP"时会绕过 disable_non_proxied_udp 策略直连 STUN,
+# 网络层参数挡不住; 从 JS 层禁用 RTCPeerConnection 才是确定性拦截 ——
+# 网页(browserleaks等)无法构造 PeerConnection, 也就无法发起 STUN 探测公网IP
+function New-WebRtcBlockScript {
+    return @'
+(function () {
+  if (window.__supermask_nowbrtc__) return; window.__supermask_nowbrtc__ = 1;
+  var msg = 'WebRTC is disabled by SuperMask (anti-leak)';
+  function blocked() { throw new DOMException(msg, 'NotSupportedError'); }
+  try { window.RTCPeerConnection = blocked; } catch (e) {}
+  try { window.webkitRTCPeerConnection = blocked; } catch (e) {}
+  try { window.RTCIceCandidate = blocked; } catch (e) {}
+  try { window.RTCSessionDescription = blocked; } catch (e) {}
+})();
+'@
+}
+
 # ---------------- 向所有页面应用伪装覆写 ----------------
 # 返回 @{ Count = 成功页面数; Errors = 错误列表 }
 function Invoke-CdpApplyMask {
@@ -187,13 +205,20 @@ function Invoke-CdpApplyMask {
             } catch { $pageErr = "UA覆写失败: $($_.Exception.Message)" }
         }
         if (-not $pageErr) {
-            if ($Mask.hardening -and -not $Cdp.Applied.ContainsKey($tid)) {
+            if (-not $Cdp.Applied.ContainsKey($tid)) {
                 try {
-                    $off = Invoke-CdpEval $conn 'new Date().getTimezoneOffset()'
-                    if ($null -ne $off) {
-                        $src = New-HardeningScript $Mask ([double]$off)
-                        $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $src }
-                        $null = Invoke-CdpEval $conn $src
+                    if ($Mask.webrtcBlock) {
+                        $wsrc = New-WebRtcBlockScript
+                        $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $wsrc }
+                        $null = Invoke-CdpEval $conn $wsrc
+                    }
+                    if ($Mask.hardening) {
+                        $off = Invoke-CdpEval $conn 'new Date().getTimezoneOffset()'
+                        if ($null -ne $off) {
+                            $src = New-HardeningScript $Mask ([double]$off)
+                            $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $src }
+                            $null = Invoke-CdpEval $conn $src
+                        }
                     }
                 } catch {}
                 $Cdp.Applied[$tid] = $true

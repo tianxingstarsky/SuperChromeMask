@@ -1,4 +1,4 @@
-# 超级面具 SuperMask v1.1
+# 超级面具 SuperMask v1.1.1
 
 给 Windows 电脑（尤其是浏览器）戴上"地理位置面具"：**GPS 坐标 / 时区 / 语言 / WebRTC** 一键伪装成任意地点。
 
@@ -15,7 +15,7 @@ VPN 只换了 IP。网站还能通过浏览器本身暴露的信息推断你的�
 | GPS 地理 API | `navigator.geolocation`（Wi-Fi/系统定位，返回真实坐标） | 调试协议运行时覆写坐标，并自动授权免弹窗 | 浏览器级·纯运行时 |
 | 时区 | `Intl`/`Date` 查询（IP 在东京而时区是东八区 → 暴露） | 运行时覆写为伪装地点时区 | 浏览器级·纯运行时 |
 | 语言/区域 | `navigator.language(s)` / Accept-Language / Intl | 运行时覆写 + 浏览器界面语言随地点 | 浏览器级·纯运行时 |
-| WebRTC | 通过 UDP/STUN 探测真实公网/内网 IP | 启动参数禁止非代理 UDP（可关） | 浏览器级·纯运行时 |
+| WebRTC | 通过 UDP/STUN 探测真实公网 IP（v1.1.1 修复的关键泄漏点：Chrome 会在 HTTP 代理无法转发 UDP 时绕过处理策略直连 STUN） | **三层防护**：① JS 层禁用 RTCPeerConnection，网页无法发起 STUN（确定性拦截）② 启动参数禁非代理 UDP ③ 面具浏览器显式代理；「验证伪装」内置泄漏探测可实测 | 浏览器级·纯运行时 |
 | IP 归属地 | **面具不改 IP**，由你的 VPN/代理决定 | 自动同步模式按出口 IP 生成全套伪装；手动模式启动时比对并提示 | 与 VPN 配合 |
 | Canvas 等指纹 | 设备关联识别（非定位，但可关联账号） | 实验性加固：Canvas 噪声 + JS 兜底（可选） | 部分缓解 |
 
@@ -102,7 +102,7 @@ powershell -File SuperMask.ps1 -CLI -Restore   # 恢复上次未正常关闭的�
 2. 需要基于 Chromium 的浏览器（Chrome / Edge）。Firefox 不支持此调试协议。
 3. 跨域 iframe 内嵌组件（第三方广告/挂件）的时区可能不完全覆盖（少见场景；实验性加固可缓解一部分）。
 4. 指纹加固为实验功能（Canvas 噪声 + JS 兜底），不承诺对抗商业级指纹检测。
-5. 开启 WebRTC 防泄漏后，浏览器内基于 WebRTC 的通话（如网页版 Discord 语音）可能不可用，取消勾选即可恢复。
+5. WebRTC 防泄漏开启时会在网页里禁用 RTCPeerConnection（否则 Chrome 会绕过代理直连 STUN 暴露真实 IP），网页版音视频通话（Discord/Meet 等）将不可用；确有需要可取消勾选，但会重新暴露真实 IP 风险。
 6. 若浏览器被企业策略禁止远程调试，工具会启动失败并提示，不会留下任何更改。
 
 ## 文件清单
