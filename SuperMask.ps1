@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  超级面具 SuperMask v1.2.2
+#  超级面具 SuperMask v1.2.3
 #  给浏览器戴上"地理位置面具": 坐标 / 时区 / 语言 / WebRTC 一键伪装
 #
 #  核心承诺:
@@ -205,11 +205,33 @@ function Start-MaskSession {
     }
 
     # 7. 打开验证页面
+    # 预注入后导航: 先开 about:blank → 附加并注册拦截脚本 → 再导航到目标页,
+    # 保证拦截脚本从第一个文档就生效(直接开目标 URL 会有首载竞态)
     if ($OpenVerifyPages) {
         foreach ($u in $script:VerifyUrls) {
-            try { $null = Invoke-Cdp $cdp.Browser 'Target.createTarget' @{ url = $u } } catch {}
+            try {
+                $nt = Invoke-Cdp $cdp.Browser 'Target.createTarget' @{ url = 'about:blank' }
+                $ntid = [string]$nt.result.targetId
+                $pc = New-CdpConnection ("ws://127.0.0.1:{0}/devtools/page/{1}" -f $port, $ntid)
+                if ($pc) {
+                    try {
+                        $null = Invoke-Cdp $pc 'Page.enable' @{}
+                        $null = Invoke-Cdp $pc 'Page.addScriptToEvaluateOnNewDocument' @{ source = (New-LoginBlockScript) }
+                        $null = Invoke-Cdp $pc 'Page.addScriptToEvaluateOnNewDocument' @{ source = (New-WebRtcBlockScript) }
+                        $null = Invoke-CdpEval $pc (New-WebRtcBlockScript)
+                        $null = Invoke-Cdp $pc 'Page.navigate' @{ url = $u }
+                    } catch {
+                        try { $null = Invoke-Cdp $pc 'Page.navigate' @{ url = $u } } catch {}
+                    }
+                    Close-CdpConnection $pc
+                } else {
+                    try { $null = Invoke-Cdp $cdp.Browser 'Target.createTarget' @{ url = $u } } catch {}
+                }
+            } catch {
+                try { $null = Invoke-Cdp $cdp.Browser 'Target.createTarget' @{ url = $u } } catch {}
+            }
         }
-        Write-Log '已打开验证页面: browserleaks 地理/WebRTC/JS指纹'
+        Write-Log '已打开验证页面(预注入后导航): browserleaks 地理/WebRTC/JS指纹'
     }
 
     return @{ session = $session; cdp = $cdp; mask = $fullMask }
@@ -509,7 +531,7 @@ function Get-HelpText {
 
 # ---------- 窗体与控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '超级面具 SuperMask v1.2.2 — 浏览器地理伪装 · 用完即恢复'
+$form.Text = '超级面具 SuperMask v1.2.3 — 浏览器地理伪装 · 用完即恢复'
 $form.ClientSize = New-Object System.Drawing.Size(600, 768)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'

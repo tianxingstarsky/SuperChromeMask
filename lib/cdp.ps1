@@ -255,6 +255,9 @@ function Invoke-CdpApplyMask {
                 $injOk = $true
                 if ($Mask.blockLogin) {
                     try {
+                        # Page.enable 必须先调用: 实测不启用 Page 域时,
+                        # addScriptToEvaluateOnNewDocument 注册的脚本在导航/重载后不会触发
+                        $null = Invoke-Cdp $conn 'Page.enable' @{}
                         $lsrc = New-LoginBlockScript
                         $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $lsrc }
                         $null = Invoke-CdpEval $conn $lsrc
@@ -266,6 +269,7 @@ function Invoke-CdpApplyMask {
                 }
                 if ($injOk -and $Mask.webrtcBlock) {
                     try {
+                        $null = Invoke-Cdp $conn 'Page.enable' @{}
                         $wsrc = New-WebRtcBlockScript
                         $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $wsrc }
                         $null = Invoke-CdpEval $conn $wsrc
@@ -273,6 +277,7 @@ function Invoke-CdpApplyMask {
                 }
                 if ($injOk -and $Mask.hardening) {
                     try {
+                        $null = Invoke-Cdp $conn 'Page.enable' @{}
                         $off = Invoke-CdpEval $conn 'new Date().getTimezoneOffset()'
                         if ($null -ne $off) {
                             $src = New-HardeningScript $Mask ([double]$off)
@@ -299,8 +304,7 @@ function Invoke-CdpApplyMask {
                     try { $null = Invoke-CdpEval $conn (New-WebRtcBlockScript) -TimeoutMs 3000 } catch {}
                 }
             }
-            $count++
-        } else {
+            $count++        } else {
             $errors += ('[{0}] {1}' -f $t.url, $pageErr)
             Close-CdpConnection $conn
             $Cdp.Pages.Remove($tid); $Cdp.Applied.Remove($tid)
