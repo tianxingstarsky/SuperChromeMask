@@ -62,9 +62,11 @@ function Start-MaskedBrowser {
         )
     }
     if ($Proxy) {
+        # 显式代理下 Chrome 自动把主机名送代理解析(DNS不落地), 无需 host-resolver-rules。
+        # 注意: 该参数值含空格, 经 Arguments 字符串传递会被 Chrome 拆成多个参数,
+        # 并把 "*"/"EXCLUDE" 等碎片当作 URL 开出垃圾标签页(实测发生过), 故不再使用
         $argList += @(
-            "--proxy-server=`"$Proxy`"",
-            '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'   # DNS 走代理, 防泄漏
+            "--proxy-server=`"$Proxy`""
         )
     }
     $psi = [Diagnostics.ProcessStartInfo]::new()

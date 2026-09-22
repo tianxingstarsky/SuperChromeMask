@@ -14,8 +14,16 @@ function New-CdpConnection {
     param([string]$Url)
     try {
         $ws = [System.Net.WebSockets.ClientWebSocket]::new()
-        # 注意: PS5.1 中链式异步调用会把 VoidTaskResult 泄漏到管道, 必须 $null = 抑制
-        $null = $ws.ConnectAsync([Uri]$Url, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        # 注意1: PS5.1 中链式异步调用会把 VoidTaskResult 泄漏到管道, 必须 $null = 抑制
+        # 注意2: ConnectAsync 必须带超时 —— 页面销毁/挂起时握手可能永远不完成,
+        #        无超时会卡死控制器整个轮询循环(实测发生过)
+        $task = $ws.ConnectAsync([Uri]$Url, [Threading.CancellationToken]::None)
+        if (-not $task.Wait(3000)) {
+            try { $ws.Abort() } catch {}
+            try { $ws.Dispose() } catch {}
+            return $null
+        }
+        $null = $task.GetAwaiter().GetResult()
         return [pscustomobject]@{ Socket = $ws; NextId = 0 }
     } catch { return $null }
 }
@@ -36,9 +44,14 @@ function Invoke-Cdp {
     if ($null -ne $Params) { $payload['params'] = $Params }
     $json = ConvertTo-Json $payload -Depth 10 -Compress
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-    $null = $Conn.Socket.SendAsync([ArraySegment[byte]]::new($bytes),
+    $sendTask = $Conn.Socket.SendAsync([ArraySegment[byte]]::new($bytes),
         [System.Net.WebSockets.WebSocketMessageType]::Text, $true,
-        [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        [Threading.CancellationToken]::None)
+    if (-not $sendTask.Wait(3000)) {
+        try { $Conn.Socket.Abort() } catch {}
+        throw "CDP 发送超时: $Method"
+    }
+    $null = $sendTask.GetAwaiter().GetResult()
 
     $buf = [byte[]]::new(65536)
     while ($true) {
@@ -167,6 +180,38 @@ function New-WebRtcBlockScript {
 '@
 }
 
+# ---------------- 登录屏蔽脚本 ----------------
+# 面具浏览器禁止登录账号: 登录会把真实身份与面具指纹绑定, 伪装失去意义。
+# Network.setBlockedURLs 附加会话前有竞态(页面可能已加载),
+# 文档开头脚本则确定性生效: 命中登录域名 → window.stop() 中止加载并替换提示页
+function New-LoginBlockScript {
+    return @'
+(function () {
+  if (window.__supermask_nologin__) return; window.__supermask_nologin__ = 1;
+  var hosts = ['accounts.google.com', 'accounts.youtube.com', 'accounts.youtube.cn'];
+  var h = location.hostname;
+  for (var i = 0; i < hosts.length; i++) {
+    if (h === hosts[i]) {
+      try { window.stop(); } catch (e) {}
+      var b = document.body || document.documentElement;
+      while (b.firstChild) { b.removeChild(b.firstChild); }
+      b.setAttribute('style', 'font-family:Segoe UI,Microsoft YaHei,sans-serif;background:#16162a;color:#e8e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0');
+      var wrap = document.createElement('div');
+      wrap.style.textAlign = 'center'; wrap.style.maxWidth = '520px'; wrap.style.padding = '24px';
+      var icon = document.createElement('div'); icon.style.fontSize = '44px'; icon.textContent = '\uD83D\uDD12';
+      var h1 = document.createElement('h1'); h1.textContent = '\u767b\u5f55\u5df2\u7981\u7528';
+      var p1 = document.createElement('p'); p1.textContent = '\u9762\u5177\u6d4f\u89c8\u5668\u7981\u6b62\u767b\u5f55\u4efb\u4f55\u8d26\u53f7 \u2014\u2014 \u767b\u5f55\u4f1a\u628a\u4f60\u7684\u771f\u5b9e\u8eab\u4efd\u4e0e\u9762\u5177\u6307\u7eb9\u5173\u8054\uff0c\u4f7f\u4f2a\u88c5\u5931\u53bb\u610f\u4e49\u3002';
+      var p2 = document.createElement('p'); p2.textContent = 'SuperMask \u9632\u8d26\u53f7\u5173\u8054\u4fdd\u62a4'; p2.style.opacity = '0.55'; p2.style.fontSize = '13px';
+      wrap.appendChild(icon); wrap.appendChild(h1); wrap.appendChild(p1); wrap.appendChild(p2);
+      b.appendChild(wrap);
+      document.title = 'SuperMask \u767b\u5f55\u5df2\u7981\u7528';
+      return;
+    }
+  }
+})();
+'@
+}
+
 # ---------------- 向所有页面应用伪装覆写 ----------------
 # 返回 @{ Count = 成功页面数; Errors = 错误列表 }
 function Invoke-CdpApplyMask {
@@ -205,23 +250,46 @@ function Invoke-CdpApplyMask {
             } catch { $pageErr = "UA覆写失败: $($_.Exception.Message)" }
         }
         if (-not $pageErr) {
+            # 注入各类脚本; 失败不标记 Applied → 下轮轮询重试(竞态导致的瞬时失败可自愈)
             if (-not $Cdp.Applied.ContainsKey($tid)) {
-                try {
-                    if ($Mask.webrtcBlock) {
+                $injOk = $true
+                if ($Mask.blockLogin) {
+                    try {
+                        $lsrc = New-LoginBlockScript
+                        $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $lsrc }
+                        $null = Invoke-CdpEval $conn $lsrc
+                        $null = Invoke-Cdp $conn 'Network.enable' @{}
+                        $null = Invoke-Cdp $conn 'Network.setBlockedURLs' @{ urls = @(
+                            '*accounts.google.com/*', '*accounts.youtube.com/*', '*accounts.youtube.cn/*'
+                        ) }
+                    } catch { $injOk = $false }
+                }
+                if ($injOk -and $Mask.webrtcBlock) {
+                    try {
                         $wsrc = New-WebRtcBlockScript
                         $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $wsrc }
                         $null = Invoke-CdpEval $conn $wsrc
-                    }
-                    if ($Mask.hardening) {
+                    } catch { $injOk = $false }
+                }
+                if ($injOk -and $Mask.hardening) {
+                    try {
                         $off = Invoke-CdpEval $conn 'new Date().getTimezoneOffset()'
                         if ($null -ne $off) {
                             $src = New-HardeningScript $Mask ([double]$off)
                             $null = Invoke-Cdp $conn 'Page.addScriptToEvaluateOnNewDocument' @{ source = $src }
                             $null = Invoke-CdpEval $conn $src
                         }
-                    }
-                } catch {}
-                $Cdp.Applied[$tid] = $true
+                    } catch { $injOk = $false }
+                }
+                if ($injOk) { $Cdp.Applied[$tid] = $true }
+            }
+            # 登录页强化(每个周期执行, 幂等): 实测 addScriptToEvaluateOnNewDocument
+            # 在 Google 重定向后的新文档上不一定触发, 周期性执行才保证登录页必然被掏空
+            if ($Mask.blockLogin) {
+                $u = [string]$t.url
+                if ($u -like '*accounts.google.com*' -or $u -like '*accounts.youtube.com*' -or $u -like '*accounts.youtube.cn*') {
+                    try { $null = Invoke-CdpEval $conn (New-LoginBlockScript) -TimeoutMs 3000 } catch {}
+                }
             }
             $count++
         } else {

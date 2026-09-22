@@ -1,4 +1,4 @@
-# 超级面具 SuperMask v1.2.0
+# 超级面具 SuperMask v1.2.1
 
 给 Windows 电脑（尤其是浏览器）戴上"地理位置面具"：**GPS 坐标 / 时区 / 语言 / WebRTC** 一键伪装成任意地点。
 
@@ -18,6 +18,7 @@ VPN 只换了 IP。网站还能通过浏览器本身暴露的信息推断你的�
 | WebRTC / QUIC 旁路 | WebRTC 的 STUN 探测、QUIC/HTTP3(UDP 443) 都可能绕过 HTTP 代理直连（v1.1.1 实测确认会泄漏真实 IP） | **强制VPN模式（v1.2.0）**：① 自动探测 SOCKS5（可承载 UDP）优先 ② 禁 QUIC/HTTP3 ③ JS 层禁用 RTCPeerConnection ④ 显式代理强制全部连接经 VPN，**代理断开即断网，绝不静默回退直连**；「验证伪装」内置泄漏探测可实测 | 浏览器级·纯运行时 |
 | IP 归属地 | **面具不改 IP**，由你的 VPN/代理决定 | 自动同步模式按出口 IP 生成全套伪装；手动模式启动时比对并提示 | 与 VPN 配合 |
 | Canvas 等指纹 | 设备关联识别（非定位，但可关联账号） | 实验性加固：Canvas 噪声 + JS 兜底（可选） | 部分缓解 |
+| 账号登录 | 登录会把身份与面具指纹/出口绑定，伪装失去意义（v1.2.1 起**刻意禁用**） | 网络层屏蔽 Google 账号登录页（accounts.google.com 等）+ 配置永远退出即焚，无任何登录状态可存留 | 浏览器级·纯运行时 |
 
 ## 快速开始
 
@@ -64,7 +65,7 @@ powershell -File SuperMask.ps1 -CLI -Stop      # 停止并恢复
 powershell -File SuperMask.ps1 -CLI -Restore   # 恢复上次未正常关闭的会话
 ```
 
-可选参数：`-NoWebRTCProtect`、`-Hardening`、`-KeepProfile`、`-SyncSystemTimezone`、`-Proxy "socks5://127.0.0.1:1080"`、`-NoVerifyPages`、`-BrowserPath <路径>`。
+可选参数：`-NoWebRTCProtect`、`-Hardening`、`-SyncSystemTimezone`、`-Proxy "socks5://127.0.0.1:1080"`、`-NoVerifyPages`、`-BrowserPath <路径>`。
 
 ## 恢复保障（闭环矩阵）
 
@@ -83,7 +84,7 @@ powershell -File SuperMask.ps1 -CLI -Restore   # 恢复上次未正常关闭的�
 - **零文件修改的运行时注入**：通过 `--remote-debugging-port` 连接 Chrome DevTools 协议，调用
   `Emulation.setGeolocationOverride`（坐标）、`Emulation.setTimezoneOverride`（时区）、`Emulation.setLocaleOverride`（语言）、
   `Browser.grantPermissions`（地理权限免弹窗）。这些是**会话级覆写**，浏览器进程一结束即彻底消失。
-- **配置隔离**：面具浏览器用 `--user-data-dir` 指向 `%TEMP%\SuperMask\` 下的临时目录（默认退出即焚，可选保留复用），你的真实浏览器配置、登录、历史全程不受影响。
+- **配置隔离**：面具浏览器用 `--user-data-dir` 指向 `%TEMP%\SuperMask\` 下的临时目录（永远退出即焚），你的真实浏览器配置、登录、历史全程不受影响。
 - **新标签页持续覆盖**：控制器每 3 秒轮询一次所有标签页，对新页面自动重新应用伪装（防止导航后覆写被清除）。
 - **系统时区（默认关）**：唯一会改系统状态的选项。修改前先把原时区写入 `%LOCALAPPDATA%\SuperMask\session.json`，并在启动文件夹放一个**自包含**的还原守卫（Base64 编码、纯 ASCII、不依赖工具目录），重启登录后静默还原并自删除。
 - **安全删除**：删除任何目录前都校验路径必须位于工具管理的 `%TEMP%\SuperMask` 或 `%LOCALAPPDATA%\SuperMask\profiles` 之下，绝不动其它路径。
@@ -92,7 +93,7 @@ powershell -File SuperMask.ps1 -CLI -Restore   # 恢复上次未正常关闭的�
 
 运行会在这些位置留下工具自身数据（均可安全手动删除）：
 
-- `%LOCALAPPDATA%\SuperMask\` —— 会话状态、偏好配置、（可选）保留的面具配置文件、守卫日志
+- `%LOCALAPPDATA%\SuperMask\` —— 会话状态、偏好配置、守卫日志
 - `%TEMP%\SuperMask\` —— 面具浏览器临时配置（正常退出即删）
 - 启动文件夹 `SuperMaskRestoreGuard.cmd` —— **仅在开启系统时区伪装期间存在**，还原后自删除
 

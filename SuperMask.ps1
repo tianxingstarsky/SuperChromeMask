@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  超级面具 SuperMask v1.2.0
+#  超级面具 SuperMask v1.2.1
 #  给浏览器戴上"地理位置面具": 坐标 / 时区 / 语言 / WebRTC 一键伪装
 #
 #  核心承诺:
@@ -19,7 +19,7 @@ param(
     [switch]$Restore, [switch]$ListLocations, [switch]$SelfTest,
     [string]$Location, [string]$CustomLocation,
     [string]$BrowserName, [string]$BrowserPath,
-    [switch]$NoWebRTCProtect, [switch]$Hardening, [switch]$KeepProfile,
+    [switch]$NoWebRTCProtect, [switch]$Hardening,
     [switch]$SyncSystemTimezone, [string]$Proxy, [switch]$NoVerifyPages, [string]$UserAgent
 )
 
@@ -83,7 +83,7 @@ function Resolve-MaskFromCustomString {
 
 # ---------------- 会话: 启动(先落盘状态, 再做变更, 保证任何时刻可恢复) ----------------
 function Start-MaskSession {
-    param($Mask, $Browser, [bool]$WebRTCProtect, [string]$Proxy, [bool]$KeepProfile,
+    param($Mask, $Browser, [bool]$WebRTCProtect, [string]$Proxy,
           [bool]$SyncTz, [bool]$HardeningOn, [string]$UserAgentStr, [bool]$OpenVerifyPages)
 
     $existing = Get-SessionState
@@ -91,15 +91,10 @@ function Start-MaskSession {
 
     Cleanup-OldTempDirs
 
-    # 1. 配置目录: 默认"退出即焚"临时目录; 保留模式存放到本工具数据目录
-    if ($KeepProfile) {
-        $profileDir = Join-Path $script:SMProfileKeepRoot ('profile_' + $Mask.id)
-        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-    } else {
-        $profileDir = Join-Path $script:SMTempRoot 'profile_run'
-        Remove-ManagedTree $profileDir | Out-Null
-        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-    }
+    # 1. 配置目录: 永远"退出即焚"临时目录 —— 面具浏览器无登录状态, 每次全新身份
+    $profileDir = Join-Path $script:SMTempRoot 'profile_run'
+    Remove-ManagedTree $profileDir | Out-Null
+    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
     $port = Get-FreeTcpPort
 
     # 2. 先把状态写盘(此后任何一步失败/断电都能恢复)
@@ -108,12 +103,13 @@ function Start-MaskSession {
     $fullMask.acceptLanguage = if ($UserAgentStr) { $Mask.locale } else { '' }
     $fullMask.hardening    = $HardeningOn
     $fullMask.webrtcBlock  = $WebRTCProtect
+    $fullMask.blockLogin   = $true   # 面具浏览器禁止登录 Google 账号(防账号关联)
     $session = [ordered]@{
         version    = 1; active = $true
         startedUtc = (Get-Date).ToUniversalTime().ToString('s')
         browserName = $Browser.Name; browserPath = $Browser.Path
         pid = 0; port = $port
-        profileDir = $profileDir; keepProfile = $KeepProfile
+        profileDir = $profileDir; keepProfile = $false
         location = $fullMask
         systemMask = @{ enabled = $false; tzBackup = ''; appliedTz = '' }
         guardPath = ''
@@ -229,12 +225,8 @@ function Stop-MaskSession {
         Write-Log "结束面具浏览器进程树 (PID $($Session.pid))..."
         Stop-MaskedBrowserProcess ([int]$Session.pid)
     }
-    # 3. 清理临时配置文件(保留模式除外)
-    if (-not $Session.keepProfile) {
-        if (Remove-ManagedTree $Session.profileDir) { Write-Log '临时配置文件已删除(真实浏览器配置全程未受影响)' }
-    } else {
-        Write-Log "按设置保留面具配置文件: $($Session.profileDir)"
-    }
+    # 3. 清理临时配置文件(永远退出即焚, 不留登录状态)
+    if (Remove-ManagedTree $Session.profileDir) { Write-Log '临时配置文件已删除, 无任何登录状态残留(真实浏览器配置全程未受影响)' }
     # 4. 还原系统时区
     if ($Session.systemMask -and $Session.systemMask.enabled -and $Session.systemMask.tzBackup) {
         try {
@@ -366,7 +358,7 @@ if ($CLI -or $ListLocations -or $Start -or $Stop -or $Status -or $Verify -or $Re
             Write-Host ('活动会话: {0}  开始于 {1} UTC' -f $s.location.name, $s.startedUtc)
             Write-Host ('  浏览器: {0}  PID={1}  调试端口={2}' -f $s.browserName, $s.pid, $s.port)
             Write-Host ('  伪装: 坐标({0},{1}) 时区{2} locale {3}' -f $s.location.lat, $s.location.lon, $s.location.timezone, $s.location.locale)
-            Write-Host ('  临时配置: {0}  保留={1}' -f $s.profileDir, $s.keepProfile)
+            Write-Host ('  临时配置: {0}  (退出即焚)' -f $s.profileDir)
             Write-Host ('  系统时区伪装: {0}{1}' -f $(if ($s.systemMask.enabled) { '开启, 备份=' + $s.systemMask.tzBackup } else { '关闭' }), `
                 $(if ($s.guardPath) { ', 开机守卫已安装' } else { '' }))
             exit 0
@@ -418,7 +410,7 @@ if ($CLI -or $ListLocations -or $Start -or $Stop -or $Status -or $Verify -or $Re
             $browser = $browsers[0]
         }
         $run = Start-MaskSession -Mask $mask -Browser $browser `
-            -WebRTCProtect (-not $NoWebRTCProtect) -Proxy $Proxy -KeepProfile ($KeepProfile) `
+            -WebRTCProtect (-not $NoWebRTCProtect) -Proxy $Proxy `
             -SyncTz ($SyncSystemTimezone) -HardeningOn ($Hardening) -UserAgentStr $UserAgent `
             -OpenVerifyPages (-not $NoVerifyPages)
         Write-Host ''
@@ -503,7 +495,8 @@ function Get-HelpText {
 
 【恢复保证】
 · 浏览器级伪装: 浏览器一关即消失, 不写任何文件, 重启自然清零
-· 临时配置文件: 退出即焚, 与真实浏览器完全隔离(可勾选保留复用)
+· 临时配置文件: 退出即焚, 与真实浏览器完全隔离, 无登录状态
+· 登录屏蔽       面具浏览器禁止登录 Google 账号(防账号关联泄露身份)
 · 系统时区(默认关): 停止时自动还原; 重启有开机守卫自动还原;
   实在不行还有 EmergencyRestore.bat 一键紧急恢复
 
@@ -516,7 +509,7 @@ function Get-HelpText {
 
 # ---------- 窗体与控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '超级面具 SuperMask v1.2.0 — 浏览器地理伪装 · 用完即恢复'
+$form.Text = '超级面具 SuperMask v1.2.1 — 浏览器地理伪装 · 用完即恢复'
 $form.ClientSize = New-Object System.Drawing.Size(600, 768)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
@@ -591,10 +584,10 @@ function New-CheckBox { param([string]$Text, [int]$X, [int]$Y, [int]$W, [bool]$C
 }
 $ckWebRTC     = New-CheckBox '强制VPN模式: Chrome全量流量走代理(SOCKS5优先) + 禁WebRTC/QUIC(推荐; 网页通话不可用)' 15 24 550 $true
 $ckHardening  = New-CheckBox '指纹加固(实验): JS 兜底时区/语言 + Canvas 噪声' 15 48 550 $false
-$ckKeep       = New-CheckBox '保留面具配置文件(登录可复用; 默认退出即焚)' 15 72 550 $false
+$ckKeep       = $null  # 登录功能已移除: 面具浏览器禁止登录, 配置永远退出即焚
 $ckSyncTz     = New-CheckBox '同步伪装系统时区(默认关; 停止自动还原 + 重启开机守卫)' 15 96 550 $false
 $ckOpenVerify = New-CheckBox '启动后自动打开验证页面(browserleaks)' 15 120 280 $true
-$grpOptions.Controls.AddRange(@($ckWebRTC, $ckHardening, $ckKeep, $ckSyncTz, $ckOpenVerify))
+$grpOptions.Controls.AddRange(@($ckWebRTC, $ckHardening, $ckSyncTz, $ckOpenVerify))
 $grpOptions.Controls.Add((New-Label '代理(可选):' 310 122 65))
 $tbProxy = New-TextBox 378 119 185
 $tbProxy.MaxLength = 120
@@ -649,7 +642,7 @@ Set-LogSink {
 }
 
 $runControls = @($cmbLocation, $tbLat, $tbLon, $tbTz, $tbLocale, $tbLang, $tbWinTz,
-    $cmbBrowser, $btnRefresh, $ckWebRTC, $ckHardening, $ckKeep, $ckSyncTz, $ckOpenVerify, $tbProxy)
+    $cmbBrowser, $btnRefresh, $ckWebRTC, $ckHardening, $ckSyncTz, $ckOpenVerify, $tbProxy)
 function Set-RunState {
     param([bool]$Running)
     foreach ($c in $runControls) { $c.Enabled = -not $Running }
@@ -749,7 +742,7 @@ $btnStart.Add_Click({
         }
         Write-Log ('正在启动面具: {0} → {1}' -f $mask.name, $browser.Name)
         $script:Run = Start-MaskSession -Mask $mask -Browser $browser `
-            -WebRTCProtect $ckWebRTC.Checked -Proxy $tbProxy.Text.Trim() -KeepProfile $ckKeep.Checked `
+            -WebRTCProtect $ckWebRTC.Checked -Proxy $tbProxy.Text.Trim() `
             -SyncTz $ckSyncTz.Checked -HardeningOn $ckHardening.Checked -UserAgentStr '' `
             -OpenVerifyPages $ckOpenVerify.Checked
         Set-RunState $true
@@ -757,7 +750,7 @@ $btnStart.Add_Click({
         # 记住偏好
         try {
             Save-AppConfig @{ lastLocation = $cmbLocation.Text; lastBrowser = $cmbBrowser.Text;
-                webrtc = $ckWebRTC.Checked; hardening = $ckHardening.Checked; keep = $ckKeep.Checked;
+                webrtc = $ckWebRTC.Checked; hardening = $ckHardening.Checked;
                 syncTz = $ckSyncTz.Checked; openVerify = $ckOpenVerify.Checked; proxy = $tbProxy.Text }
         } catch {}
     } catch {
@@ -842,7 +835,7 @@ try {
         }
         if ($null -ne $cfg.webrtc)     { $ckWebRTC.Checked     = [bool]$cfg.webrtc }
         if ($null -ne $cfg.hardening)  { $ckHardening.Checked  = [bool]$cfg.hardening }
-        if ($null -ne $cfg.keep)       { $ckKeep.Checked       = [bool]$cfg.keep }
+
         if ($null -ne $cfg.syncTz)     { $ckSyncTz.Checked     = [bool]$cfg.syncTz }
         if ($null -ne $cfg.openVerify) { $ckOpenVerify.Checked = [bool]$cfg.openVerify }
         if ($cfg.proxy)                { $tbProxy.Text         = [string]$cfg.proxy }
