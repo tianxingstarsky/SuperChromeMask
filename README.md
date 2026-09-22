@@ -1,4 +1,4 @@
-# 超级面具 SuperMask v1.1.1
+# 超级面具 SuperMask v1.1.2
 
 给 Windows 电脑（尤其是浏览器）戴上"地理位置面具"：**GPS 坐标 / 时区 / 语言 / WebRTC** 一键伪装成任意地点。
 

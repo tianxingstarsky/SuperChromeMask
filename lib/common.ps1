@@ -3,8 +3,9 @@
 #  状态文件 / 用户偏好 / 日志 / 路径安全 / 网络工具
 #  设计原则: 运行时优先, 不修改系统文件, 用完即恢复
 # ============================================================
+# 注意: 不要在此处使用 $PSScriptRoot —— ps2exe 打包后它是空字符串,
+# 会导致 exe 启动即报"无法将参数绑定到参数Path"并终止(主窗口不出现)
 
-$script:SMRoot           = Split-Path -Parent $PSScriptRoot
 $script:SMStateDir       = Join-Path $env:LOCALAPPDATA 'SuperMask'
 $script:SMStateFile      = Join-Path $script:SMStateDir 'session.json'
 $script:SMConfigFile     = Join-Path $script:SMStateDir 'config.json'

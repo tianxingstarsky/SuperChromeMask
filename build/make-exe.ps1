@@ -15,19 +15,30 @@ New-Item -ItemType Directory -Path $build -Force | Out-Null
 
 function Read-Utf8 { param($p) [IO.File]::ReadAllText($p, [Text.UTF8Encoding]::new($false)) }
 
-# ---- 1. 合并 lib(按依赖顺序) + 主程序(去掉 dot-source 行) ----
+# ---- 1. 合并 lib(按依赖顺序) + 主程序 ----
+# 关键: PowerShell 要求 param(...) 必须是脚本第一条语句,
+# 所以必须把主程序的注释头+param块提到最前, lib 插在其后, 再接主程序主体
 $libOrder = @('common.ps1', 'locations.ps1', 'geoip.ps1', 'cdp.ps1', 'browser.ps1', 'sysmask.ps1')
+$main = Read-Utf8 (Join-Path $root 'SuperMask.ps1')
+$mainLines = $main -split "`r?`n"
+# 找到主程序 param(...) 块: 从开头到第一个单独的 ")" 行
+$closeIdx = -1
+for ($i = 0; $i -lt $mainLines.Count; $i++) {
+    if ($mainLines[$i] -eq ')') { $closeIdx = $i; break }
+}
+if ($closeIdx -lt 0) { throw '未能在 SuperMask.ps1 中定位 param() 块结尾' }
+$head  = $mainLines[0..$closeIdx] -join "`r`n"          # 注释头 + param 块
+$body  = ($mainLines[($closeIdx + 1)..($mainLines.Count - 1)] | Where-Object { $_ -notlike '. (Join-Path*' }) -join "`r`n"
 $sb = [Text.StringBuilder]::new()
 [void]$sb.AppendLine('# ============================================================')
-[void]$sb.AppendLine("#  SuperMask SuperMask v$Version - 单文件打包版 (由 build\make-exe.ps1 生成, 勿手改)")
+[void]$sb.AppendLine("#  SuperMask 超级面具 v$Version - 单文件打包版 (由 build\make-exe.ps1 生成, 勿手改)")
 [void]$sb.AppendLine('# ============================================================')
+[void]$sb.AppendLine($head)
 foreach ($f in $libOrder) {
     [void]$sb.AppendLine(("# ---- lib/$f ----"))
     [void]$sb.AppendLine((Read-Utf8 (Join-Path $root "lib\$f")))
 }
-$main = Read-Utf8 (Join-Path $root 'SuperMask.ps1')
-$mainLines = $main -split "`r?`n" | Where-Object { $_ -notlike '. (Join-Path*' }
-[void]$sb.AppendLine(($mainLines -join "`r`n"))
+[void]$sb.AppendLine($body)
 $bundled = Join-Path $build 'SuperMask-bundled.ps1'
 [IO.File]::WriteAllText($bundled, $sb.ToString(), [Text.UTF8Encoding]::new($true))
 Write-Host "bundled -> $bundled"
